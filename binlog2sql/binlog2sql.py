@@ -14,7 +14,8 @@ class Binlog2sql(object):
 
     def __init__(self, connection_settings, start_file=None, start_pos=None, end_file=None, end_pos=None,
                  start_time=None, stop_time=None, only_schemas=None, only_tables=None, no_pk=False,
-                 flashback=False, stop_never=False, back_interval=1.0, only_dml=True, sql_type=None):
+                 flashback=False, stop_never=False, back_interval=1.0, only_dml=True, sql_type=None,
+                 where_field={}):
         """
         conn_setting: {'host': 127.0.0.1, 'port': 3306, 'user': user, 'passwd': passwd, 'charset': 'utf8'}
         """
@@ -38,6 +39,7 @@ class Binlog2sql(object):
 
         self.only_schemas = only_schemas if only_schemas else None
         self.only_tables = only_tables if only_tables else None
+        self.where_field = where_field
         self.no_pk, self.flashback, self.stop_never, self.back_interval = (no_pk, flashback, stop_never, back_interval)
         self.only_dml = only_dml
         self.sql_type = [t.upper() for t in sql_type] if sql_type else []
@@ -98,13 +100,15 @@ class Binlog2sql(object):
 
                 if isinstance(binlog_event, QueryEvent) and not self.only_dml:
                     sql = concat_sql_from_binlog_event(cursor=cursor, binlog_event=binlog_event,
-                                                       flashback=self.flashback, no_pk=self.no_pk)
+                                                       flashback=self.flashback, no_pk=self.no_pk,
+                                                       where_field=self.where_field)
                     if sql:
                         print(sql)
                 elif is_dml_event(binlog_event) and event_type(binlog_event) in self.sql_type:
                     for row in binlog_event.rows:
                         sql = concat_sql_from_binlog_event(cursor=cursor, binlog_event=binlog_event, no_pk=self.no_pk,
-                                                           row=row, flashback=self.flashback, e_start_pos=e_start_pos)
+                                                           row=row, flashback=self.flashback, e_start_pos=e_start_pos,
+                                                           where_field=self.where_field)
                         if self.flashback:
                             f_tmp.write(sql + '\n')
                         else:
@@ -141,10 +145,12 @@ class Binlog2sql(object):
 
 if __name__ == '__main__':
     args = command_line_args(sys.argv[1:])
+    print(str(args))
     conn_setting = {'host': args.host, 'port': args.port, 'user': args.user, 'passwd': args.password, 'charset': 'utf8'}
     binlog2sql = Binlog2sql(connection_settings=conn_setting, start_file=args.start_file, start_pos=args.start_pos,
                             end_file=args.end_file, end_pos=args.end_pos, start_time=args.start_time,
                             stop_time=args.stop_time, only_schemas=args.databases, only_tables=args.tables,
                             no_pk=args.no_pk, flashback=args.flashback, stop_never=args.stop_never,
-                            back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type)
+                            back_interval=args.back_interval, only_dml=args.only_dml, sql_type=args.sql_type,
+                            where_field=args.where_field)
     binlog2sql.process_binlog()

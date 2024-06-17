@@ -85,6 +85,8 @@ def parse_args():
                         help='dbs you want to process', default='')
     schema.add_argument('-t', '--tables', dest='tables', type=str, nargs='*',
                         help='tables you want to process', default='')
+    schema.add_argument('-w', '--where-field', dest='where_field', type=str, nargs='*',
+                        help='where field you want to process', default={})
 
     event = parser.add_argument_group('type filter')
     event.add_argument('--only-dml', dest='only_dml', action='store_true', default=False,
@@ -122,6 +124,14 @@ def command_line_args(args):
         args.password = getpass.getpass()
     else:
         args.password = args.password[0]
+    if(args.where_field):
+        tableField = {}
+        for field in args.where_field:
+            fieldSplit = field.split(".")
+            if fieldSplit[0] not in tableField:
+                tableField[fieldSplit[0]] = []
+            tableField[fieldSplit[0]].append(fieldSplit[1])
+        args.where_field = tableField
     return args
 
 
@@ -164,7 +174,8 @@ def event_type(event):
     return t
 
 
-def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=None, flashback=False, no_pk=False):
+def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=None, flashback=False, no_pk=False,
+                                 where_field={}):
     if flashback and no_pk:
         raise ValueError('only one of flashback or no_pk can be True')
     if not (isinstance(binlog_event, WriteRowsEvent) or isinstance(binlog_event, UpdateRowsEvent)
@@ -174,7 +185,7 @@ def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=Non
     sql = ''
     if isinstance(binlog_event, WriteRowsEvent) or isinstance(binlog_event, UpdateRowsEvent) \
             or isinstance(binlog_event, DeleteRowsEvent):
-        pattern = generate_sql_pattern(binlog_event, row=row, flashback=flashback, no_pk=no_pk)
+        pattern = generate_sql_pattern(binlog_event, row=row, flashback=flashback, no_pk=no_pk,where_field=where_field)
         sql = cursor.mogrify(pattern['template'], pattern['values'])
         time = datetime.datetime.fromtimestamp(binlog_event.timestamp)
         sql += ' #start %s end %s time %s' % (e_start_pos, binlog_event.packet.log_pos, time)
@@ -187,9 +198,24 @@ def concat_sql_from_binlog_event(cursor, binlog_event, row=None, e_start_pos=Non
     return sql
 
 
-def generate_sql_pattern(binlog_event, row=None, flashback=False, no_pk=False):
+def get_where_map(whereListField=[],allMap={}):
+    lWhereMap = {}
+    for key, value in allMap.items():
+        if(key in whereListField):
+            lWhereMap[key] = value
+            
+    return lWhereMap
+
+def generate_sql_pattern(binlog_event, row=None, flashback=False, no_pk=False,where_field={}):
     template = ''
     values = []
+    lWhereMap = {}
+    if('before_values' in row):
+        lWhereMap = get_where_map(whereListField=where_field[binlog_event.table],allMap=row['before_values'])
+    elif('values' in row):
+        lWhereMap = get_where_map(whereListField=where_field[binlog_event.table],allMap=row['values'])
+    
+
     if flashback is True:
         if isinstance(binlog_event, WriteRowsEvent):
             template = 'DELETE FROM `{0}`.`{1}` WHERE {2} LIMIT 1;'.format(
@@ -228,16 +254,15 @@ def generate_sql_pattern(binlog_event, row=None, flashback=False, no_pk=False):
             values = map(fix_object, row['values'].values())
         elif isinstance(binlog_event, DeleteRowsEvent):
             template = 'DELETE FROM `{0}`.`{1}` WHERE {2} LIMIT 1;'.format(
-                binlog_event.schema, binlog_event.table, ' AND '.join(map(compare_items, row['values'].items())))
-            values = map(fix_object, row['values'].values())
+                binlog_event.schema, binlog_event.table, ' AND '.join(map(compare_items, lWhereMap.items())))
+            values = map(fix_object, lWhereMap.values())
         elif isinstance(binlog_event, UpdateRowsEvent):
             template = 'UPDATE `{0}`.`{1}` SET {2} WHERE {3} LIMIT 1;'.format(
                 binlog_event.schema, binlog_event.table,
                 ', '.join(['`%s`=%%s' % k for k in row['after_values'].keys()]),
-                ' AND '.join(map(compare_items, row['before_values'].items()))
+                ' AND '.join(map(compare_items, lWhereMap.items()))
             )
-            values = map(fix_object, list(row['after_values'].values())+list(row['before_values'].values()))
-
+            values = map(fix_object, list(row['after_values'].values())+list(lWhereMap.values()))
     return {'template': template, 'values': list(values)}
 
 
